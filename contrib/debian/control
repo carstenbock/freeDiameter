@@ -31,7 +31,7 @@ Description: The freeDiameter libraries.
 Package: freediameter-dev
 Architecture: any
 Section: contrib/devel
-Depends: freediameter-common (= ${binary:Version}), libsctp-dev, libgnutls-dev, libgcrypt-dev
+Depends: freediameter-common (= ${binary:Version}), libsctp-dev, libgnutls28-dev | libgnutls-dev, libgcrypt20-dev | libgcrypt-dev
 Description: This package provides the development files for freeDiameter.
 
 Package: freediameter-daemon
