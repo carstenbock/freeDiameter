@@ -297,6 +297,8 @@ struct peer_info {
 		
 		char *		pic_priority;	/* Priority string for GnuTLS if we don't use the default */
 		
+		struct fd_list	pic_connect_hosts;	/* ConnectTo hostnames for DNS re-resolution on reconnect (list of struct fd_connect_host) */
+		
 	} config;	/* Configured data (static for this peer entry) */
 	
 	struct {

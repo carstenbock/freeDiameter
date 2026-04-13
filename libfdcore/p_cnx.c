@@ -80,6 +80,44 @@ static int prepare_connection_list(struct fd_peer * peer)
 	int count = 0;
 	
 	TRACE_ENTRY("%p", peer);
+	
+	/* Re-resolve ConnectTo hostnames (for Kubernetes / dynamic DNS environments) */
+	if (!FD_IS_LIST_EMPTY(&peer->p_hdr.info.config.pic_connect_hosts)) {
+		struct fd_list * ep_li, * host_li;
+		
+		/* Remove previously resolved (EP_FL_DISC) endpoints; keep static IP entries (EP_FL_CONF) */
+		for (ep_li = peer->p_hdr.info.pi_endpoints.next; ep_li != &peer->p_hdr.info.pi_endpoints; ) {
+			struct fd_endpoint * ep = (struct fd_endpoint *)ep_li;
+			ep_li = ep_li->next;
+			if ((ep->flags & EP_FL_DISC) && !(ep->flags & EP_FL_CONF)) {
+				fd_list_unlink(&ep->chain);
+				free(ep);
+			}
+		}
+		
+		/* Re-resolve each stored hostname */
+		for (host_li = peer->p_hdr.info.config.pic_connect_hosts.next; host_li != &peer->p_hdr.info.config.pic_connect_hosts; host_li = host_li->next) {
+			struct fd_connect_host * host = (struct fd_connect_host *)host_li;
+			struct addrinfo hints, *ai, *aip;
+			int ret;
+			
+			memset(&hints, 0, sizeof(hints));
+			hints.ai_flags = AI_ADDRCONFIG;
+			ret = getaddrinfo(host->hostname, NULL, &hints, &ai);
+			if (ret) {
+				LOG_N("Unable to resolve ConnectTo hostname '%s' for peer '%s' (%s), skipping",
+					host->hostname, peer->p_hdr.info.pi_diamid, gai_strerror(ret));
+				continue;
+			}
+			
+			for (aip = ai; aip != NULL; aip = aip->ai_next) {
+				CHECK_FCT( fd_ep_add_merge( &peer->p_hdr.info.pi_endpoints, aip->ai_addr, aip->ai_addrlen, EP_FL_DISC ) );
+			}
+			freeaddrinfo(ai);
+			
+			LOG_D("Re-resolved ConnectTo '%s' for peer '%s'", host->hostname, peer->p_hdr.info.pi_diamid);
+		}
+	}
 	 
 	/* Resolve peer address(es) if needed */
 	if (FD_IS_LIST_EMPTY(&peer->p_hdr.info.pi_endpoints)) {

@@ -137,6 +137,12 @@ struct sr_list {
 	pthread_t       thr; /* the thread that handles timeouts (expirecb called in separate forked threads) */
 };
 
+/* ConnectTo hostname entry, for DNS re-resolution on reconnect */
+struct fd_connect_host {
+	struct fd_list	chain;
+	char *		hostname;
+};
+
 /* Peers */
 struct fd_peer { /* The "real" definition of the peer structure */
 	

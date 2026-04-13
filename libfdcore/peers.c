@@ -69,6 +69,7 @@ int fd_peer_alloc(struct fd_peer ** ptr)
 	fd_list_init(&p->p_hdr.chain, p);
 	
 	fd_list_init(&p->p_hdr.info.pi_endpoints, p);
+	fd_list_init(&p->p_hdr.info.config.pic_connect_hosts, p);
 	fd_list_init(&p->p_hdr.info.runtime.pir_apps, p);
 	
 	p->p_eyec = EYEC_PEER;
@@ -123,6 +124,15 @@ int fd_peer_add ( struct peer_info * info, const char * orig_dbg, void (*cb)(str
 	if (info->config.pic_priority) {
 		CHECK_MALLOC( p->p_hdr.info.config.pic_priority = strdup(info->config.pic_priority) );
 	}
+	
+	/* Re-init the connect hosts list (memcpy left stale pointers) and move entries from info */
+	fd_list_init(&p->p_hdr.info.config.pic_connect_hosts, p);
+	if (info->config.pic_connect_hosts.next)
+		while (!FD_IS_LIST_EMPTY( &info->config.pic_connect_hosts )) {
+			li = info->config.pic_connect_hosts.next;
+			fd_list_unlink(li);
+			fd_list_insert_before(&p->p_hdr.info.config.pic_connect_hosts, li);
+		}
 	
 	/* Move the list of endpoints into the peer */
 	if (info->pi_endpoints.next)
@@ -332,7 +342,16 @@ int fd_peer_free(struct fd_peer ** ptr)
 	free_null(p->p_hdr.info.pi_diamid);
 	
 	free_null(p->p_hdr.info.config.pic_realm); 
-	free_null(p->p_hdr.info.config.pic_priority); 
+	free_null(p->p_hdr.info.config.pic_priority);
+	
+	/* Free ConnectTo hostname list */
+	while (!FD_IS_LIST_EMPTY(&p->p_hdr.info.config.pic_connect_hosts)) {
+		struct fd_list * __li = p->p_hdr.info.config.pic_connect_hosts.next;
+		struct fd_connect_host * host = (struct fd_connect_host *)__li;
+		fd_list_unlink(__li);
+		free(host->hostname);
+		free(host);
+	}
 	
 	free_null(p->p_hdr.info.runtime.pir_realm);
 	free_null(p->p_hdr.info.runtime.pir_prodname);

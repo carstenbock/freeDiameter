@@ -493,6 +493,7 @@ connpeer:		{
 				memset(&fddpi, 0, sizeof(fddpi));
 				fddpi.config.pic_flags.persist = PI_PRST_ALWAYS;
 				fd_list_init( &fddpi.pi_endpoints, NULL );
+				fd_list_init( &fddpi.config.pic_connect_hosts, NULL );
 			}
 			CONNPEER '=' QSTRING peerinfo ';'
 			{
@@ -508,6 +509,13 @@ connpeer:		{
 					struct fd_list * li = fddpi.pi_endpoints.next;
 					fd_list_unlink(li);
 					free(li);
+				}
+				while (!FD_IS_LIST_EMPTY(&fddpi.config.pic_connect_hosts)) {
+					struct fd_list * li = fddpi.config.pic_connect_hosts.next;
+					struct fd_connect_host * host = (struct fd_connect_host *)li;
+					fd_list_unlink(li);
+					free(host->hostname);
+					free(host);
 				}
 			}
 			;
@@ -599,20 +607,34 @@ peerparams:		/* empty */
 			{
 				struct addrinfo hints, *ai;
 				int ret;
-				int disc = 0;
+				int is_hostname = 0;
 				
 				memset(&hints, 0, sizeof(hints));
 				hints.ai_flags = AI_ADDRCONFIG | AI_NUMERICHOST;
 				ret = getaddrinfo($4, NULL, &hints, &ai);
 				if (ret == EAI_NONAME) {
-					/* The name was maybe not numeric, try again */
-					disc = EP_FL_DISC;
+					is_hostname = 1;
 					hints.ai_flags &= ~ AI_NUMERICHOST;
 					ret = getaddrinfo($4, NULL, &hints, &ai);
 				}
 				if (ret) { yyerror (&yylloc, conf, gai_strerror(ret)); YYERROR; }
 				
-				CHECK_FCT_DO( fd_ep_add_merge( &fddpi.pi_endpoints, ai->ai_addr, ai->ai_addrlen, EP_FL_CONF | (disc ?: EP_ACCEPTALL) ), YYERROR );
+				if (is_hostname) {
+					struct addrinfo *aip;
+					/* Store the hostname for DNS re-resolution on reconnect */
+					struct fd_connect_host *host = NULL;
+					CHECK_MALLOC_DO( host = malloc(sizeof(*host)), YYERROR );
+					fd_list_init(&host->chain, NULL);
+					CHECK_MALLOC_DO( host->hostname = strdup($4), { free(host); YYERROR; } );
+					fd_list_insert_before(&fddpi.config.pic_connect_hosts, &host->chain);
+					
+					/* Merge all resolved addresses (hostname may have multiple A/AAAA records) */
+					for (aip = ai; aip != NULL; aip = aip->ai_next) {
+						CHECK_FCT_DO( fd_ep_add_merge( &fddpi.pi_endpoints, aip->ai_addr, aip->ai_addrlen, EP_FL_DISC ), YYERROR );
+					}
+				} else {
+					CHECK_FCT_DO( fd_ep_add_merge( &fddpi.pi_endpoints, ai->ai_addr, ai->ai_addrlen, EP_FL_CONF | EP_ACCEPTALL ), YYERROR );
+				}
 				free($4);
 				freeaddrinfo(ai);
 			}
