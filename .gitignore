@@ -6,9 +6,11 @@ syntax: glob
 *.sum
 .cache/
 .hg
+build/
 compile_commands.json
 test.*
 GPATH
 GRTAGS
 GTAGS
 .vscode
+out/
