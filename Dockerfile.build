@@ -1,0 +1,110 @@
+# Multi-stage Dockerfile for building freeDiameter and Debian packages
+#
+# Stage 1 "build": compile from source
+# Stage 2 "package": produce .deb files using the existing contrib/debian/ packaging
+
+ARG DISTRO=bookworm
+
+# ---------------------------------------------------------------------------
+# Stage 1 – compile
+# ---------------------------------------------------------------------------
+FROM debian:${DISTRO} AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake make gcc g++ bison flex pkg-config \
+        libsctp-dev libgnutls28-dev libgcrypt20-dev libidn2-dev \
+        libpq-dev default-libmysqlclient-dev libxml2-dev \
+        libjsoncpp-dev \
+        git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . /src
+
+# DebianPackage build type automatically excludes extensions that need
+# unavailable dependencies (dict_json, dbg_interactive).
+RUN mkdir /build && cd /build \
+    && cmake /src \
+        -DCMAKE_BUILD_TYPE=DebianPackage \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DDEFAULT_CONF_PATH=/etc/freeDiameter \
+        -DBUILD_TESTING=OFF \
+        -DALL_EXTENSIONS=ON \
+    && cmake --build . -j"$(nproc)"
+
+# ---------------------------------------------------------------------------
+# Stage 2 – Debian packages
+# ---------------------------------------------------------------------------
+FROM debian:${DISTRO} AS package
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake make gcc g++ bison flex pkg-config \
+        libsctp-dev libgnutls28-dev libgcrypt20-dev libidn2-dev \
+        libpq-dev default-libmysqlclient-dev libxml2-dev \
+        libjsoncpp-dev \
+        devscripts debhelper fakeroot lintian \
+        git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . /src
+
+# The existing packaging lives under contrib/debian/; dpkg-buildpackage
+# expects it at the repo root as debian/.
+RUN cp -a contrib/debian /src/debian
+
+# Ensure debhelper compat level is set (the old contrib/debian/ tree
+# didn't ship a compat file).
+RUN echo "13" > /src/debian/compat
+
+# Patch debian/control: replace obsolete Build-Depends package names
+# with their Bookworm equivalents and drop packages not needed when
+# dict_json / dbg_interactive are excluded by DebianPackage build type.
+RUN sed -i \
+        -e 's/libmysqlclient-dev/default-libmysqlclient-dev/' \
+        -e 's/ swig,//' \
+        -e 's/ python2-dev | python-dev,//' \
+        -e 's/libgcrypt11-dev | //' \
+        /src/debian/control
+
+# The first changelog entry (1.6.0 UNRELEASED) is missing the mandatory
+# trailer line — add one so dpkg-parsechangelog is happy.
+RUN sed -i '4s/$/\n -- freeDiameter Maintainers <maintainers@freediameter.net>  Sun, 01 Jan 2023 00:00:00 +0000/' \
+        /src/debian/changelog
+
+# The upstream .install files are outdated and don't list extensions added
+# after the last packaging refresh.  Append the missing ones.
+RUN printf '%s\n' \
+        'usr/lib/freeDiameter/rt_busypeers.fdx' \
+        'usr/lib/freeDiameter/rt_deny_by_size.fdx' \
+        'usr/lib/freeDiameter/rt_ignore_dh.fdx' \
+        'usr/lib/freeDiameter/rt_load_balance.fdx' \
+        'usr/lib/freeDiameter/rt_randomize.fdx' \
+        'usr/lib/freeDiameter/rt_redirect.fdx' \
+        'usr/lib/freeDiameter/rt_rewrite.fdx' \
+        'usr/lib/freeDiameter/app_redirect.fdx' \
+        'usr/lib/freeDiameter/dbg_loglevel.fdx' \
+        'usr/lib/freeDiameter/dbg_msg_dumps.fdx' \
+        'usr/lib/freeDiameter/dbg_msg_timings.fdx' \
+        >> /src/debian/freediameter-common.install \
+    && printf '%s\n' \
+        'usr/lib/freeDiameter/dbg_dict_dump.fdx' \
+        'usr/lib/freeDiameter/dbg_dict_dump_json.fdx' \
+        'usr/lib/freeDiameter/test_as.fdx' \
+        'usr/lib/freeDiameter/test_cc.fdx' \
+        'usr/lib/freeDiameter/test_ccload.fdx' \
+        >> /src/debian/freediameter-debug-tools.install \
+    && printf '%s\n' \
+        'usr/lib/freeDiameter/dict_dcca_3gpp.fdx' \
+        'usr/lib/freeDiameter/dict_dcca_starent.fdx' \
+        >> /src/debian/freediameter-dictionary-rfc4006.install
+
+RUN dpkg-buildpackage -us -uc -b -j"$(nproc)"
+
+# Collect every produced .deb into /debs for easy extraction.
+RUN mkdir /debs && mv /freediameter*.deb /debs/ 2>/dev/null; \
+    mv /*.deb /debs/ 2>/dev/null; true
