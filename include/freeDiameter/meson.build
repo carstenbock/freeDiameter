@@ -144,7 +144,7 @@ endif
 
 # Check for gcrypt/idn library
 libgcrypt = cc.find_library('gcrypt')
-libidn = cc.find_library('idn')
+libidn = cc.find_library('idn2')
 
 # Check for gnutls library
 libgnutls = cc.find_library('gnutls')
