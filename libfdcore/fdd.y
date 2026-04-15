@@ -617,26 +617,29 @@ peerparams:		/* empty */
 					hints.ai_flags &= ~ AI_NUMERICHOST;
 					ret = getaddrinfo($4, NULL, &hints, &ai);
 				}
-				if (ret) { yyerror (&yylloc, conf, gai_strerror(ret)); YYERROR; }
+				if (ret && !is_hostname) { yyerror (&yylloc, conf, gai_strerror(ret)); YYERROR; }
 				
 				if (is_hostname) {
-					struct addrinfo *aip;
-					/* Store the hostname for DNS re-resolution on reconnect */
 					struct fd_connect_host *host = NULL;
 					CHECK_MALLOC_DO( host = malloc(sizeof(*host)), YYERROR );
 					fd_list_init(&host->chain, NULL);
 					CHECK_MALLOC_DO( host->hostname = strdup($4), { free(host); YYERROR; } );
 					fd_list_insert_before(&fddpi.config.pic_connect_hosts, &host->chain);
 					
-					/* Merge all resolved addresses (hostname may have multiple A/AAAA records) */
-					for (aip = ai; aip != NULL; aip = aip->ai_next) {
-						CHECK_FCT_DO( fd_ep_add_merge( &fddpi.pi_endpoints, aip->ai_addr, aip->ai_addrlen, EP_FL_DISC ), YYERROR );
+					if (!ret) {
+						struct addrinfo *aip;
+						for (aip = ai; aip != NULL; aip = aip->ai_next) {
+							CHECK_FCT_DO( fd_ep_add_merge( &fddpi.pi_endpoints, aip->ai_addr, aip->ai_addrlen, EP_FL_DISC ), YYERROR );
+						}
+					} else {
+						LOG_N("ConnectTo host '%s' unresolvable (%s), will retry at connect time", $4, gai_strerror(ret));
+						ai = NULL;
 					}
 				} else {
 					CHECK_FCT_DO( fd_ep_add_merge( &fddpi.pi_endpoints, ai->ai_addr, ai->ai_addrlen, EP_FL_CONF | EP_ACCEPTALL ), YYERROR );
 				}
 				free($4);
-				freeaddrinfo(ai);
+				if (ai) freeaddrinfo(ai);
 			}
 			;
 
