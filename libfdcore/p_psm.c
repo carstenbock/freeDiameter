@@ -105,6 +105,12 @@ that is lost will be in many cases sent again as the failover mechanism
 specifies.
 */
 
+/* Maximum PSM restart attempts for persistent peers after abnormal shutdown.
+   Uses exponential backoff: Tc, 2*Tc, 4*Tc, ... up to 16*Tc per attempt. */
+#ifndef PSM_MAX_RETRIES
+#define PSM_MAX_RETRIES		10
+#endif
+
 /* The actual declaration of peer_state_str */
 DECLARE_STATE_STR();
 
@@ -400,6 +406,7 @@ static void * p_psm_th( void * arg )
 	size_t ev_sz;
 	void * ev_data;
 	int cur_state;
+	int psm_retries = 0;
 
 	CHECK_PARAMS_DO( CHECK_PEER(peer), ASSERT(0) );
 
@@ -436,6 +443,11 @@ psm_loop:
 	cur_state = fd_peer_getstate(peer);
 	if (cur_state == -1)
 		goto psm_end;
+
+	/* Reset abnormal-exit retry counter once the peer is successfully open */
+	if (cur_state == STATE_OPEN || cur_state == STATE_OPEN_NEW || cur_state == STATE_REOPEN) {
+		psm_retries = 0;
+	}
 
 	TRACE_DEBUG(FULL, "'%s'\t<-- '%s'\t(%p,%zd)\t'%s'",
 			STATE_STR(cur_state),
@@ -905,7 +917,21 @@ psm_end:
 	if ((cur_state == STATE_CLOSING) || (cur_state == STATE_CLOSING_GRACE)) {
 		LOG_N("%s: Going to ZOMBIE state (no more activity) after normal shutdown", peer->p_hdr.info.pi_diamid);
 	} else {
-		LOG_E("%s: Going to ZOMBIE state (no more activity) after abnormal shutdown", peer->p_hdr.info.pi_diamid);
+		LOG_E("%s: PSM abnormal exit (state=%s)", peer->p_hdr.info.pi_diamid, STATE_STR(cur_state));
+
+		/* For persistent peers, attempt reconnection instead of permanent ZOMBIE */
+		if (peer->p_hdr.info.config.pic_flags.persist == PI_PRST_ALWAYS
+				&& !peer->p_flags.pf_delete
+				&& psm_retries < PSM_MAX_RETRIES) {
+			int tc = peer->p_hdr.info.config.pic_tctimer ?: fd_g_config->cnf_timer_tc;
+			int delay = tc * (1 << (psm_retries > 4 ? 4 : psm_retries));
+			psm_retries++;
+			LOG_N("%s: Persistent peer, reconnecting (attempt %d/%d, delay %ds)",
+					peer->p_hdr.info.pi_diamid, psm_retries, PSM_MAX_RETRIES, delay);
+			fd_psm_cleanup(peer, 0);
+			fd_psm_next_timeout(peer, 1, delay);
+			goto psm_loop;
+		}
 	}
 	fd_psm_cleanup(peer, 1);
 	TRACE_DEBUG(INFO, "'%s'\t-> 'STATE_ZOMBIE' (terminated)\t'%s'",

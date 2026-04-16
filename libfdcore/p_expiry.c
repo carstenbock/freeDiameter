@@ -50,11 +50,13 @@ static void * gc_th_fct(void * arg)
 	TRACE_ENTRY( "%p", arg );
 	
 	do {
-		struct fd_list * li, purge = FD_LIST_INITIALIZER(purge);
+		struct fd_list * li;
+		struct fd_list purge = FD_LIST_INITIALIZER(purge);
+		struct fd_list restart = FD_LIST_INITIALIZER(restart);
 		
 		sleep(GC_TIME);	/* sleep is a cancellation point */
 		
-		/* Now check in the peers list if any peer can be deleted */
+		/* Now check in the peers list if any peer can be deleted or restarted */
 		CHECK_FCT_DO( pthread_rwlock_wrlock(&fd_g_peers_rw), goto error );
 		
 		for (li = fd_g_peers.next; li != &fd_g_peers; li = li->next) {
@@ -63,8 +65,13 @@ static void * gc_th_fct(void * arg)
 			if (fd_peer_getstate(peer) != STATE_ZOMBIE)
 				continue;
 			
-			if (peer->p_hdr.info.config.pic_flags.persist == PI_PRST_ALWAYS)
-				continue; /* This peer was not supposed to terminate, keep it in the list for debug */
+			if (peer->p_hdr.info.config.pic_flags.persist == PI_PRST_ALWAYS) {
+				/* Collect persistent zombies for PSM restart */
+				li = li->prev;
+				fd_list_unlink(&peer->p_hdr.chain);
+				fd_list_insert_before(&restart, &peer->p_hdr.chain);
+				continue;
+			}
 			
 			/* Ok, the peer was expired, let's remove it */
 			li = li->prev; /* to avoid breaking the loop */
@@ -80,6 +87,31 @@ static void * gc_th_fct(void * arg)
 			fd_list_unlink(&peer->p_hdr.chain);
 			TRACE_DEBUG(INFO, "Garbage Collect: delete zombie peer '%s'", peer->p_hdr.info.pi_diamid);
 			CHECK_FCT_DO( fd_peer_free(&peer), /* Continue... what else to do ? */ );
+		}
+		
+		/* Restart PSM for persistent zombie peers */
+		while (!FD_IS_LIST_EMPTY(&restart)) {
+			struct fd_peer * peer = (struct fd_peer *)(restart.next->o);
+			fd_list_unlink(&peer->p_hdr.chain);
+			
+			LOG_N("Garbage Collect: restarting PSM for persistent zombie peer '%s'", peer->p_hdr.info.pi_diamid);
+			
+			CHECK_POSIX_DO( pthread_mutex_lock(&peer->p_state_mtx), goto restart_fail );
+			peer->p_state = STATE_NEW;
+			CHECK_POSIX_DO( pthread_mutex_unlock(&peer->p_state_mtx), goto restart_fail );
+			
+			if (fd_psm_begin(peer) != 0) {
+			restart_fail:
+				LOG_E("Failed to restart PSM for peer '%s', returning to zombie", peer->p_hdr.info.pi_diamid);
+				CHECK_POSIX_DO( pthread_mutex_lock(&peer->p_state_mtx), );
+				peer->p_state = STATE_ZOMBIE;
+				CHECK_POSIX_DO( pthread_mutex_unlock(&peer->p_state_mtx), );
+			}
+			
+			/* Re-insert into the global peers list */
+			CHECK_FCT_DO( pthread_rwlock_wrlock(&fd_g_peers_rw), goto error );
+			fd_list_insert_before(&fd_g_peers, &peer->p_hdr.chain);
+			CHECK_FCT_DO( pthread_rwlock_unlock(&fd_g_peers_rw), goto error );
 		}
 	} while (1);
 	
