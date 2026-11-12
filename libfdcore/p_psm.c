@@ -739,7 +739,8 @@ psm_loop:
 
 			case STATE_CLOSING_GRACE:
 				fd_hook_call(HOOK_PEER_CONNECT_FAILED, NULL, peer, "Connection closed", NULL);
-				if (peer->p_flags.pf_localterm) /* initiated here */
+				/* initiated here, or both sides shutting down (DPR collision) */
+				if (peer->p_flags.pf_localterm || fd_g_peers_shutdown)
 					goto psm_end;
 
 				fd_psm_cleanup(peer, 0);
@@ -884,7 +885,7 @@ psm_loop:
 			case STATE_CLOSING_GRACE:
 				/* The grace period is completed, now close */
 				fd_hook_call(HOOK_PEER_CONNECT_FAILED, NULL, peer, "Connection closed", NULL);
-				if (peer->p_flags.pf_localterm)
+				if (peer->p_flags.pf_localterm || fd_g_peers_shutdown)
 					goto psm_end;
 
 				fd_psm_cleanup(peer, 0);
@@ -907,7 +908,8 @@ psm_loop:
 	/* Default action : the handling has not yet been implemented. [for debug only] */
 	TRACE_DEBUG(INFO, "Missing handler in PSM for '%s'\t<-- '%s'", STATE_STR(cur_state), fd_pev_str(event));
 psm_reset:
-	if (peer->p_flags.pf_delete)
+	/* No reconnection attempt once the framework shuts down (fd_peer_fini) */
+	if (peer->p_flags.pf_delete || fd_g_peers_shutdown)
 		goto psm_end;
 	fd_psm_cleanup(peer, 0);
 	goto psm_loop;
@@ -920,8 +922,11 @@ psm_end:
 		LOG_E("%s: PSM abnormal exit (state=%s)", peer->p_hdr.info.pi_diamid, STATE_STR(cur_state));
 
 		/* For persistent peers, attempt reconnection instead of permanent ZOMBIE */
+		/* ... but not while the framework shuts down (fd_peer_fini), or the
+		   peer never reaches ZOMBIE and the shutdown waits for the timeout */
 		if (peer->p_hdr.info.config.pic_flags.persist == PI_PRST_ALWAYS
 				&& !peer->p_flags.pf_delete
+				&& !fd_g_peers_shutdown
 				&& psm_retries < PSM_MAX_RETRIES) {
 			int tc = peer->p_hdr.info.config.pic_tctimer ?: fd_g_config->cnf_timer_tc;
 			int delay = tc * (1 << (psm_retries > 4 ? 4 : psm_retries));

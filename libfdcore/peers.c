@@ -380,6 +380,11 @@ int fd_peer_free(struct fd_peer ** ptr)
 }
 
 /* Terminate peer module (destroy all peers, first gently, then violently) */
+/* Set once fd_peer_fini() starts: persistent peers are no longer restarted
+ * (see psm_end in p_psm.c), so every PSM can reach ZOMBIE and the shutdown
+ * does not wait for DPR_TIMEOUT + 1 seconds. */
+volatile int fd_g_peers_shutdown = 0;
+
 int fd_peer_fini()
 {
 	struct fd_list * li;
@@ -388,6 +393,8 @@ int fd_peer_fini()
 	struct timespec	wait_until, now;
 	
 	TRACE_ENTRY();
+	
+	fd_g_peers_shutdown = 1;
 	
 	CHECK_FCT_DO(fd_p_expi_fini(), /* continue */);
 	

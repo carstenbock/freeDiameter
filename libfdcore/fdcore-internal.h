@@ -283,6 +283,7 @@ struct cnx_incoming {
 
 /* Functions */
 int  fd_peer_fini();
+extern volatile int fd_g_peers_shutdown; /* set by fd_peer_fini(): no PSM restarts any more */
 int  fd_peer_fini_force();
 int  fd_peer_alloc(struct fd_peer ** ptr);
 int  fd_peer_free(struct fd_peer ** ptr);
