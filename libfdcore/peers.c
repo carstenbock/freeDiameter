@@ -391,6 +391,7 @@ int fd_peer_fini()
 	struct fd_list purge = FD_LIST_INITIALIZER(purge); /* Store zombie peers here */
 	int list_empty;
 	struct timespec	wait_until, now;
+	int loops = 0;
 	
 	TRACE_ENTRY();
 	
@@ -427,11 +428,19 @@ int fd_peer_fini()
 		
 		/* Allow the PSM(s) to execute */
 		usleep(100000);
+		loops++;
 		
 		/* Remove zombie peers */
 		CHECK_FCT_DO( pthread_rwlock_wrlock(&fd_g_peers_rw), /* continue */ );
 		for (li = fd_g_peers.next; li != &fd_g_peers; li = li->next) {
 			struct fd_peer * peer = (struct fd_peer *)li->o;
+			/* A peer that closed its connection just before the shutdown
+			 * (e.g. it sent a DPR) can sit in CLOSED waiting for its
+			 * reconnect timer without having seen the TERMINATE event.
+			 * Ask it again once per second. */
+			if ((loops % 10 == 0) && (fd_peer_getstate(peer) == STATE_CLOSED)) {
+				CHECK_FCT_DO( fd_psm_terminate(peer, "REBOOTING"), /* continue */ );
+			}
 			if (fd_peer_getstate(peer) == STATE_ZOMBIE) {
 				li = li->prev; /* to avoid breaking the loop */
 				fd_list_unlink(&peer->p_hdr.chain);
